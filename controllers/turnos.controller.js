@@ -1,86 +1,9 @@
-// // controllers/turnos.controller.js
-// const db = require('../firebase-admin');
-// const { collection, doc, getDocs, query, orderBy, addDoc, deleteDoc, updateDoc, writeBatch, serverTimestamp } = require('firebase-admin/firestore');
-
-// exports.getTurnos = async (req, res) => {
-//   const { comercio } = req.query;
-//   if (!comercio) return res.status(400).json({ error: "comercio requerido" });
-
-//   try {
-//     const q = query(collection(db, `comercios/${comercio}/turnos`), orderBy('posicion'));
-//     const snapshot = await getDocs(q);
-//     const turnos = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-//     res.json(turnos);
-//   } catch (error) {
-//     console.error("Error getTurnos:", error);
-//     res.status(500).json({ error: "Error interno" });
-//   }
-// };
-
-// exports.agregarTurno = async (req, res) => {
-//   const { comercioId, nombre, telefono, especial } = req.body;
-//   if (!comercioId || !nombre || !telefono) return res.status(400).json({ error: "Datos incompletos" });
-
-//   try {
-//     const turnosSnap = await getDocs(query(collection(db, `comercios/${comercioId}/turnos`), orderBy('posicion')));
-//     const turnos = turnosSnap.docs.map(d => d.data());
-
-//     const posiciones = turnos.filter(t => !t.sobreturno).map(t => t.posicion);
-//     const nuevaPosicion = posiciones.length ? Math.max(...posiciones) + 1 : 1;
-
-//     await addDoc(collection(db, `comercios/${comercioId}/turnos`), {
-//       nombre: nombre.trim(),
-//       telefono: telefono.trim(),
-//       posicion: nuevaPosicion,
-//       especial: !!especial,
-//       sobreturno: false,
-//       ocupado: false,
-//       cancelado: false,
-//       timestamp: serverTimestamp(),
-//     });
-
-//     // Regenerar sobreturnos
-//     const batch = db.batch();
-//     const sobreturnosLibres = turnos.filter(t => t.sobreturno && !t.ocupado);
-//     sobreturnosLibres.forEach(t => batch.delete(doc(db, `comercios/${comercioId}/turnos`, t.id)));
-
-//     const clientes = turnos.filter(t => !t.sobreturno).sort((a, b) => a.posicion - b.posicion);
-//     for (let i = 0; i < clientes.length - 1; i++) {
-//       const pos = clientes[i].posicion + 0.5;
-//       const yaExiste = turnos.some(t => t.sobreturno && Math.abs(t.posicion - pos) < 0.01);
-//       if (!yaExiste) {
-//         const nuevoRef = doc(collection(db, `comercios/${comercioId}/turnos`));
-//         batch.set(nuevoRef, {
-//           nombre: `SOBRETURNO ${pos}`,
-//           telefono: "",
-//           posicion: pos,
-//           especial: false,
-//           sobreturno: true,
-//           ocupado: false,
-//           cancelado: false,
-//           timestamp: serverTimestamp(),
-//         });
-//       }
-//     }
-//     await batch.commit();
-
-//     res.json({ success: true, posicion: nuevaPosicion });
-//   } catch (error) {
-//     console.error("Error agregarTurno:", error);
-//     res.status(500).json({ error: "Error interno" });
-//   }
-// };
-
-// // Puedes agregar aquí avanzarTurno, cancelarTurno, ocuparSobreturno cuando quieras
-
-
-// ================================================================
-// ================================================================
 
 // controllers/turnos.controller.js
 const admin = require('firebase-admin');
 const db = require('../firebase-admin');
 
+const { io } = require('../server');
 
 
 
@@ -101,6 +24,9 @@ exports.getTurnos = async (req, res) => {
     res.status(500).json({ error: 'Error interno' });
   }
 };
+
+
+
 
 exports.agregarTurno = async (req, res) => {
   const { comercioId, nombre, telefono, especial } = req.body;
@@ -128,8 +54,11 @@ exports.agregarTurno = async (req, res) => {
       posicion: nuevaPosicion,
       especial: !!especial,
       sobreturno: false,
-      ocupado: false,
-      cancelado: false,
+      // ocupado: false,
+      // cancelado: false,
+      estado: "espera",
+      atendidoEn: null,
+      finalizadoEn: null,
       timestamp: admin.firestore.FieldValue.serverTimestamp(),
     });
 
@@ -157,8 +86,11 @@ exports.agregarTurno = async (req, res) => {
           posicion: pos,
           especial: false,
           sobreturno: true,
-          ocupado: false,
-          cancelado: false,
+          // ocupado: false,
+          // cancelado: false,
+          estado: "espera",
+          atendidoEn: null,
+          finalizadoEn: null,
           timestamp: admin.firestore.FieldValue.serverTimestamp(),
         });
       }
@@ -182,6 +114,9 @@ exports.agregarTurno = async (req, res) => {
 };
 
 
+
+
+
 // exports.avanzarTurno = async (req, res) => {
 //   const { comercioId } = req.body;
 
@@ -190,150 +125,208 @@ exports.agregarTurno = async (req, res) => {
 //   }
 
 //   try {
-//     // 1. Obtener todos los turnos activos ordenados por posición
-//     const turnosSnap = await db.collection(`comercios/${comercioId}/turnos`)
-//       .where('cancelado', '==', false)
-//       .where('sobreturno', '==', false) // Solo turnos normales
-//       .orderBy('posicion')
+//     const turnosRef = db.collection(`comercios/${comercioId}/turnos`);
+
+//     // 🔎 1️⃣ Buscar turno en atención (si existe)
+//     const enAtencionSnap = await turnosRef
+//       .where('estado', '==', 'en_atencion')
+//       .limit(1)
 //       .get();
 
-//     if (turnosSnap.empty) {
-//       return res.status(400).json({ error: "No hay turnos para avanzar" });
-//     }
+//     // 🔎 2️⃣ Buscar siguiente en espera (ordenado por posición)
+//     const siguienteSnap = await turnosRef
+//       .where('estado', '==', 'espera')
+//       .where('sobreturno', '==', false)
+//       .orderBy('posicion')
+//       .limit(1)
+//       .get();
 
-//     const turnos = turnosSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-
-//     // 2. El turno actual (el primero no ocupado)
-//     const turnoActual = turnos.find(t => !t.ocupado);
-
-//     if (!turnoActual) {
-//       return res.status(400).json({ error: "No hay turno en atención" });
+//     if (siguienteSnap.empty && enAtencionSnap.empty) {
+//       return res.status(400).json({ error: "No hay turnos en espera" });
 //     }
 
 //     const batch = db.batch();
 
-//     // 3. Marcar el turno actual como ocupado (o eliminado, según tu lógica)
-//     // Opción A: marcar como ocupado
-//     batch.update(db.collection(`comercios/${comercioId}/turnos`).doc(turnoActual.id), {
-//       ocupado: true,
-//       atendidoEn: admin.firestore.FieldValue.serverTimestamp(),
-//     });
-
-//     // Opción B: eliminarlo directamente (si querés que desaparezca de la lista)
-//     // batch.delete(db.collection(`comercios/${comercioId}/turnos`).doc(turnoActual.id));
-
-//     // 4. Opcional: regenerar sobreturnos (si tu lógica lo necesita después de avanzar)
-//     // Podés llamar a la misma lógica que tenés en agregarTurno, o moverla a una función separada
-//     // Por ahora lo dejamos como regeneración simple (igual que en agregarTurno)
-//     const clientes = turnos.filter(t => !t.sobreturno && !t.ocupado);
-//     const sobreturnosLibres = turnos.filter(t => t.sobreturno && !t.ocupado);
-
-//     // Borrar sobreturnos libres
-//     sobreturnosLibres.forEach(t => {
-//       if (t.id) {
-//         batch.delete(db.collection(`comercios/${comercioId}/turnos`).doc(t.id));
-//       }
-//     });
-
-//     // Crear nuevos sobreturnos entre clientes
-//     for (let i = 0; i < clientes.length - 1; i++) {
-//       const pos = clientes[i].posicion + 0.5;
-//       const yaExiste = turnos.some(t => t.sobreturno && Math.abs(t.posicion - pos) < 0.01);
-//       if (!yaExiste) {
-//         const nuevoSobRef = db.collection(`comercios/${comercioId}/turnos`).doc();
-//         batch.set(nuevoSobRef, {
-//           nombre: `SOBRETURNO ${pos}`,
-//           telefono: "",
-//           posicion: pos,
-//           especial: false,
-//           sobreturno: true,
-//           ocupado: false,
-//           cancelado: false,
-//           timestamp: admin.firestore.FieldValue.serverTimestamp(),
-//         });
-//       }
+//     // ✅ Finalizar el que estaba en atención
+//     if (!enAtencionSnap.empty) {
+//       const actualDoc = enAtencionSnap.docs[0];
+//       batch.update(actualDoc.ref, {
+//         estado: "finalizado",
+//         finalizadoEn: admin.firestore.FieldValue.serverTimestamp(),
+//       });
 //     }
+
+//     // ✅ Pasar el siguiente a en_atencion
+//     if (!siguienteSnap.empty) {
+//       const siguienteDoc = siguienteSnap.docs[0];
+//       batch.update(siguienteDoc.ref, {
+//         estado: "en_atencion",
+//         atendidoEn: admin.firestore.FieldValue.serverTimestamp(),
+//       });
+//     }
+
+//     // await batch.commit();
+
+//     // res.json({ success: true });
 
 //     await batch.commit();
 
-//     res.json({ 
-//       success: true, 
-//       message: "Turno avanzado correctamente",
-//       turnoAtendido: turnoActual.id 
-//     });
-//   } catch (error) {
-//     console.error("Error al avanzar turno:", error);
-//     res.status(500).json({ error: "Error interno del servidor" });
-//   }
-// };
+//     // 🔁 Volver a traer todos los turnos actualizados
+//     const updatedSnap = await turnosRef
+//       .orderBy('posicion')
+//       .get();
 
+//     const updatedTurnos = updatedSnap.docs.map(doc => ({
+//       id: doc.id,
+//       ...doc.data()
+//     }));
+
+//     // 📡 Emitir a todos los sockets del comercio
+//     // req.io.to(comercioId).emit('turnosUpdated', updatedTurnos);
+    
+//     // io.to(`commerce:${comercioId}`).emit('turnosUpdated', updatedTurnos);
+
+//     res.json({ success: true });
 exports.avanzarTurno = async (req, res) => {
   const { comercioId } = req.body;
 
-  console.log(`[avanzarTurno] Inicio - comercioId: ${comercioId}`);
-
   if (!comercioId) {
-    console.log('[avanzarTurno] Error: falta comercioId');
     return res.status(400).json({ error: "comercioId requerido" });
   }
 
   try {
-    console.log(`[avanzarTurno] Consultando subcolección: comercios/${comercioId}/turnos`);
+    const turnosRef = db.collection(`comercios/${comercioId}/turnos`);
 
-    const turnosSnap = await db.collection(`comercios/${comercioId}/turnos`)
-      .where('cancelado', '==', false)
-      .where('sobreturno', '==', false)
-      .orderBy('posicion')
+    // 1️⃣ Buscar turno actualmente en atención
+    const enAtencionSnap = await turnosRef
+      .where("estado", "==", "en_atencion")
+      .limit(1)
       .get();
 
-    console.log(`[avanzarTurno] Turnos encontrados: ${turnosSnap.size}`);
+    // 2️⃣ Buscar siguiente turno en espera (ordenado por creación)
+    const siguienteSnap = await turnosRef
+      .where("estado", "==", "espera")
+      .where("sobreturno", "==", false)
+      .orderBy("timestamp") // ⚠️ IMPORTANTE: usar campo estable
+      .limit(1)
+      .get();
 
-    if (turnosSnap.empty) {
-      console.log('[avanzarTurno] No hay turnos válidos para avanzar');
-      return res.status(400).json({ error: "No hay turnos para avanzar" });
+    if (siguienteSnap.empty && enAtencionSnap.empty) {
+      return res.status(400).json({ error: "No hay turnos en espera" });
     }
-
-    const turnos = turnosSnap.docs.map(doc => {
-      const data = doc.data();
-      console.log(`[avanzarTurno] Turno ID ${doc.id}:`, data);
-      return { id: doc.id, ...data };
-    });
-
-    const turnoActual = turnos.find(t => !t.ocupado);
-    if (!turnoActual) {
-      console.log('[avanzarTurno] Ningún turno sin ocupar');
-      return res.status(400).json({ error: "No hay turno en atención" });
-    }
-
-    console.log(`[avanzarTurno] Avanzando turno: ${turnoActual.id} (pos: ${turnoActual.posicion})`);
 
     const batch = db.batch();
 
-    const turnoRef = db.collection(`comercios/${comercioId}/turnos`).doc(turnoActual.id);
-    batch.update(turnoRef, {
-      ocupado: true,
-      atendidoEn: admin.firestore.FieldValue.serverTimestamp(),
-    });
+    // 3️⃣ Finalizar el actual si existe
+    if (!enAtencionSnap.empty) {
+      const actualDoc = enAtencionSnap.docs[0];
+      // batch.update(actualDoc.ref, {
+      //   estado: "finalizado",
+      //   finalizadoEn: admin.firestore.FieldValue.serverTimestamp(),
+      // });
 
-    console.log('[avanzarTurno] Actualizando turno actual como ocupado');
 
-    // Regeneración de sobreturnos (simplificada para debug)
-    // ... tu código de sobreturnos aquí ...
 
-    console.log('[avanzarTurno] Ejecutando batch.commit()');
+      if (!enAtencionSnap.empty) {
+        const actualDoc = enAtencionSnap.docs[0];
+        const data = actualDoc.data();
+
+        const historialRef = db
+          .collection(`comercios/${comercioId}/historialTurnos`)
+          .doc(actualDoc.id);
+
+        batch.set(historialRef, {
+          ...data,
+          estado: "finalizado",
+          finalizadoEn: admin.firestore.FieldValue.serverTimestamp(),
+        });
+
+        batch.delete(actualDoc.ref);
+      }
+
+
+
+
+
+
+
+    }
+
+    // 4️⃣ Pasar siguiente a en_atencion
+    if (!siguienteSnap.empty) {
+      const siguienteDoc = siguienteSnap.docs[0];
+      batch.update(siguienteDoc.ref, {
+        estado: "en_atencion",
+        atendidoEn: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+
     await batch.commit();
 
-    console.log('[avanzarTurno] ÉXITO');
-    res.json({ success: true, message: "Turno avanzado correctamente" });
-  } catch (error) {
-    console.error('[avanzarTurno] ERROR COMPLETO:', error);
-    console.error(error.stack);
-    res.status(500).json({ 
-      error: "Error interno del servidor",
-      details: error.message 
+    // 5️⃣ 🔁 Recalcular posiciones reales
+    const activosSnap = await turnosRef
+      .where("estado", "in", ["espera", "en_atencion"])
+      .orderBy("timestamp")
+      .get();
+
+    const reorderBatch = db.batch();
+    let nuevaPosicion = 1;
+
+    activosSnap.docs.forEach(doc => {
+      reorderBatch.update(doc.ref, {
+        posicion: nuevaPosicion,
+      });
+      nuevaPosicion++;
     });
+
+    await reorderBatch.commit();
+
+    return res.json({ success: true });
+
+  } catch (error) {
+    console.error("Error avanzando turno:", error);
+    return res.status(500).json({ error: "Error interno del servidor" });
   }
 };
+
+
+exports.getHistorialTurnos = async (req, res) => {
+  const { comercio } = req.query;
+
+  if (!comercio) {
+    return res.status(400).json({ error: "comercio requerido" });
+  }
+
+  try {
+    const hoy = new Date();
+    hoy.setHours(0, 0, 0, 0);
+
+    const inicioDelDia = admin.firestore.Timestamp.fromDate(hoy);
+
+    const snap = await db
+      .collection(`comercios/${comercio}/historialTurnos`)
+      .where("finalizadoEn", ">=", inicioDelDia)
+      .orderBy("finalizadoEn", "desc")
+      .get();
+
+    const turnos = snap.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
+
+    return res.json({
+      turnos,
+      cantidadHoy: snap.size
+    });
+
+  } catch (error) {
+    console.error("Error historial:", error);
+    return res.status(500).json({ error: "Error interno" });
+  }
+};
+
+
+
 
 
 

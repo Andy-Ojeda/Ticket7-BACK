@@ -8,10 +8,10 @@ const db = admin.firestore();
 router.post('/login', (req, res) => {
   const { usuario, password } = req.body;
 
-if (req.body){
-    console.log("USUARIO:: ", usuario)
-    console.log("PASSWORD:: ", password)
-}
+  if (req.body){
+      console.log("USUARIO:: ", usuario)
+      console.log("PASSWORD:: ", password)
+  }
 
 
   if (usuario === 'admin@admin' && password === 'Logan1301...!!') {
